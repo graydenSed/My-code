@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Atmospheric Flight to Hyper-Space</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #0a1526; font-family: 'Courier New', Courier, monospace; user-select: none; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        
+        #hud { position: absolute; top: 20px; left: 20px; color: #fff; text-shadow: 0 0 10px #000; pointer-events: none; z-index: 10; }
+        h1 { margin: 0; font-size: 32px; letter-spacing: 2px; text-transform: uppercase; color: #ffffff; transition: color 0.1s; }
+        .stats { font-size: 24px; margin-top: 10px; font-weight: bold; }
+        .fps-counter { color: #88ff88; text-shadow: 0 0 10px #000; }
+        .boost-text { color: #1166ff; text-shadow: 0 0 20px #1166ff; opacity: 0; transition: opacity 0.1s; margin-top: 5px; font-size: 20px; font-style: italic; letter-spacing: 4px; }
+        
+        #instructions { position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); text-align: center; color: rgba(255,255,255,0.9); font-size: 18px; letter-spacing: 1px; pointer-events: none; background: rgba(0,0,0,0.6); padding: 15px; border-radius: 10px; border: 1px solid #555;}
+        .key { display: inline-block; background: #222; border: 2px solid #fff; color: #fff; padding: 5px 10px; border-radius: 5px; font-weight: bold; margin: 0 5px; }
+    </style>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
+</head>
+<body>
+
+    <div id="hud">
+        <h1 id="world-title">Sector 7: Metropolis</h1>
+        <div class="stats fps-counter">FPS: <span id="fps">60</span></div>
+        <div class="stats">Airspeed: <span id="speed">0</span> KTS</div>
+        <div class="stats">Distance: <span id="miles">0.00</span> MI</div>
+        <div class="stats boost-text" id="boost-ui">HYPER-DRIVE ENGAGED</div>
+    </div>
+
+    <div id="instructions">
+        Hold <span class="key">W</span> to Accelerate | <span class="key">S</span> to Airbrake | Hold <span class="key">SHIFT</span> to Breach Atmosphere
+    </div>
+
+    <script>
+        // --- 1. PROCEDURAL TEXTURES ---
+        const mapSize = 2048;
+        const ctxCanvas = document.createElement('canvas');
+        ctxCanvas.width = mapSize; ctxCanvas.height = mapSize;
+        const ctx = ctxCanvas.getContext('2d');
+        
+        ctx.fillStyle = '#020205'; ctx.fillRect(0, 0, mapSize, mapSize);
+        const gridSize = 128;
+        ctx.strokeStyle = '#0a4466'; ctx.lineWidth = 4;
+        ctx.beginPath();
+        for(let x=0; x<=mapSize; x+=gridSize) { ctx.moveTo(x, 0); ctx.lineTo(x, mapSize); }
+        for(let y=0; y<=mapSize; y+=gridSize) { ctx.moveTo(0, y); ctx.lineTo(mapSize, y); }
+        ctx.stroke();
+
+        for(let i=0; i<300; i++) {
+            const isBright = Math.random() > 0.85;
+            ctx.fillStyle = isBright ? '#00ffff' : '#081122'; 
+            const bx = Math.floor(Math.random() * (mapSize/gridSize)) * gridSize;
+            const by = Math.floor(Math.random() * (mapSize/gridSize)) * gridSize;
+            ctx.fillRect(bx + 4, by + 4, gridSize - 8, gridSize - 8);
+        }
+
+        const groundTexture = new THREE.CanvasTexture(ctxCanvas);
+        groundTexture.wrapS = THREE.RepeatWrapping; groundTexture.wrapT = THREE.RepeatWrapping;
+        groundTexture.repeat.set(40, 40); 
+
+        const windowAtlasSize = 512; const windowPaneSize = 32; 
+        const windowAtlasCanvas = document.createElement('canvas');
+        windowAtlasCanvas.width = windowAtlasSize; windowAtlasCanvas.height = windowAtlasSize;
+        const wCtx = windowAtlasCanvas.getContext('2d');
+
+        for (let y = 0; y < windowAtlasSize / windowPaneSize; y++) {
+            for (let x = 0; x < windowAtlasSize / windowPaneSize; x++) {
+                const startX = x * windowPaneSize, startY = y * windowPaneSize;
+                wCtx.fillStyle = `hsl(${Math.random() * 360}, 10%, ${2 + Math.random() * 5}%)`;
+                wCtx.fillRect(startX, startY, windowPaneSize, windowPaneSize);
+
+                if (Math.random() > 0.3) { 
+                    wCtx.fillStyle = `hsl(190, ${60 + Math.random() * 40}%, ${60 + Math.random() * 20}%)`;
+                    wCtx.fillRect(startX + 2, startY + 2, windowPaneSize - 4, windowPaneSize - 4);
+                    const gradient = wCtx.createLinearGradient(startX, startY, startX + windowPaneSize, startY + windowPaneSize);
+                    gradient.addColorStop(0, `rgba(0,0,0,${0.3 + Math.random()*0.2})`);
+                    gradient.addColorStop(1, `rgba(0,0,0,${0.1 + Math.random()*0.1})`);
+                    wCtx.fillStyle = gradient; wCtx.fillRect(startX, startY, windowPaneSize, windowPaneSize);
+                }
+                wCtx.strokeStyle = '#111'; wCtx.lineWidth = 1;
+                wCtx.strokeRect(startX + 0.5, startY + 0.5, windowPaneSize - 1, windowPaneSize - 1);
+            }
+        }
+        const windowAtlasTexture = new THREE.CanvasTexture(windowAtlasCanvas);
+        windowAtlasTexture.wrapS = THREE.RepeatWrapping; windowAtlasTexture.wrapT = THREE.RepeatWrapping;
+        windowAtlasTexture.repeat.set(4, 15); 
+
+        const tCan = document.createElement('canvas');
+        tCan.width = 512; tCan.height = 512;
+        const tCtx = tCan.getContext('2d');
+        tCtx.fillStyle = '#020205'; tCtx.fillRect(0,0,512,512);
+        tCtx.strokeStyle = '#00ffff'; tCtx.lineWidth = 8; tCtx.strokeRect(0,0,512,512);
+        tCtx.strokeStyle = '#ff00ff'; tCtx.lineWidth = 4;
+        tCtx.beginPath();
+        for(let i=1; i<8; i++) {
+            tCtx.moveTo(0, i*64); tCtx.lineTo(512, i*64);
+            tCtx.moveTo(i*64, 0); tCtx.lineTo(i*64, 512);
+        }
+        tCtx.stroke();
+        const tunnelTexture = new THREE.CanvasTexture(tCan);
+        tunnelTexture.wrapS = THREE.RepeatWrapping; tunnelTexture.wrapT = THREE.RepeatWrapping; tunnelTexture.repeat.set(8, 2); 
+
+        // --- 2. FLIGHT PATH MATH ---
+        const numHarmonics = 5;
+        const baseParams = { x: [], y: [], z: [] };
+        const chaosParams = { x: [], y: [], z: [] };
+
+        for(let i = 0; i < numHarmonics; i++) {
+            baseParams.x.push({ amp: Math.random() * 40 + 15, freq: Math.random() * 0.0015 + 0.001, phase: Math.random() * Math.PI * 2 });
+            baseParams.y.push({ amp: Math.random() * 25 + 5,  freq: Math.random() * 0.0015 + 0.001, phase: Math.random() * Math.PI * 2 });
+            baseParams.z.push({ amp: Math.random() * 40 + 15, freq: Math.random() * 0.0015 + 0.001, phase: Math.random() * Math.PI * 2 });
+            
+            chaosParams.x.push({ amp: Math.random() * 80 + 50, freq: Math.random() * 0.003 + 0.002, phase: Math.random() * Math.PI * 2 });
+            chaosParams.y.push({ amp: Math.random() * 80 + 50, freq: Math.random() * 0.003 + 0.002, phase: Math.random() * Math.PI * 2 });
+            chaosParams.z.push({ amp: Math.random() * 80 + 50, freq: Math.random() * 0.003 + 0.002, phase: Math.random() * Math.PI * 2 });
+        }
+
+        const basePathCache = [new THREE.Vector3(0, 100, 0)]; const baseUpCache = [new THREE.Vector3(0,1,0)];
+        const chaosPathCache = [new THREE.Vector3(0, 100, 0)]; const chaosUpCache = [new THREE.Vector3(0,1,0)];
+        let trackChaosLevel = 0; 
+        
+        function expandPaths(targetDistance) {
+            let lastBasePos = basePathCache[basePathCache.length - 1], lastBaseUp = baseUpCache[baseUpCache.length - 1];
+            let lastChaosPos = chaosPathCache[chaosPathCache.length - 1], lastChaosUp = chaosUpCache[chaosUpCache.length - 1];
+            
+            for(let t = basePathCache.length; t <= targetDistance; t++) {
+                let dbx = 0, dby = 0, dbz = 0, dcx = 0, dcy = 0, dcz = 0;
+                for(let i = 0; i < numHarmonics; i++) {
+                    dbx += Math.sin(t * baseParams.x[i].freq + baseParams.x[i].phase) * baseParams.x[i].amp * 0.012;
+                    dby += Math.cos(t * baseParams.y[i].freq + baseParams.y[i].phase) * baseParams.y[i].amp * 0.012;
+                    dbz += Math.sin(t * baseParams.z[i].freq + baseParams.z[i].phase) * baseParams.z[i].amp * 0.012;
+                    
+                    dcx += Math.sin(t * chaosParams.x[i].freq + chaosParams.x[i].phase) * chaosParams.x[i].amp * 0.012;
+                    dcy += Math.cos(t * chaosParams.y[i].freq + chaosParams.y[i].phase) * chaosParams.y[i].amp * 0.012;
+                    dcz += Math.sin(t * chaosParams.z[i].freq + chaosParams.z[i].phase) * chaosParams.z[i].amp * 0.012;
+                }
+                dby += (100 - lastBasePos.y) * 0.005; dbz -= 2.0; dcz -= 2.0; 
+                
+                const bForward = new THREE.Vector3(dbx, dby, dbz).normalize();
+                const nextBPos = lastBasePos.clone().add(bForward);
+                if (nextBPos.y < 30) nextBPos.y = 30; 
+                const bRight = new THREE.Vector3().crossVectors(bForward, lastBaseUp).normalize();
+                const nextBUp = new THREE.Vector3().crossVectors(bRight, bForward).normalize();
+                nextBUp.applyAxisAngle(bForward, bRight.y * 0.15); 
+                
+                const cForward = new THREE.Vector3(dcx, dcy, dcz).normalize();
+                const nextCPos = lastChaosPos.clone().add(cForward);
+                const cRight = new THREE.Vector3().crossVectors(cForward, lastChaosUp).normalize();
+                const nextCUp = new THREE.Vector3().crossVectors(cRight, cForward).normalize();
+                nextCUp.applyAxisAngle(cForward, cRight.y * 0.6); 
+
+                basePathCache.push(nextBPos); baseUpCache.push(nextBUp); chaosPathCache.push(nextCPos); chaosUpCache.push(nextCUp);
+                lastBasePos = nextBPos; lastBaseUp = nextBUp; lastChaosPos = nextCPos; lastChaosUp = nextCUp;
+            }
+        }
+        expandPaths(2000);
+
+        let distance = 0, speed = 0, voidMode = false;
+        function getFlightData(dist) {
+            const index = Math.floor(dist);
+            // Dynamic lookahead scaling to support massive speeds like 7500
+            const requiredLookAhead = Math.max(2500, speed * 2.5);
+            if (index >= basePathCache.length - requiredLookAhead) expandPaths(index + requiredLookAhead); 
+            
+            const tParam = dist - index;
+            const bPos = new THREE.Vector3().lerpVectors(basePathCache[index], basePathCache[index + 1], tParam);
+            const bUp = new THREE.Vector3().lerpVectors(baseUpCache[index], baseUpCache[index + 1], tParam).normalize();
+            const cPos = new THREE.Vector3().lerpVectors(chaosPathCache[index], chaosPathCache[index + 1], tParam);
+            const cUp = new THREE.Vector3().lerpVectors(chaosUpCache[index], chaosUpCache[index + 1], tParam).normalize();
+            return { pos: new THREE.Vector3().lerpVectors(bPos, cPos, trackChaosLevel), up: new THREE.Vector3().lerpVectors(bUp, cUp, trackChaosLevel).normalize() };
+        }
+
+        // --- 3. SCENE & ENVIRONMENT SETUP ---
+        const scene = new THREE.Scene();
+        const colorSkyBlue = new THREE.Color(0x0a1526); const colorSpaceBlack = new THREE.Color(0x010003);
+        scene.background = colorSkyBlue.clone(); scene.fog = new THREE.FogExp2(colorSkyBlue.clone(), 0.0008); 
+
+        const camera = new THREE.PerspectiveCamera(85, window.innerWidth / window.innerHeight, 0.1, 80000);
+        scene.add(camera);
+        
+        const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        const renderScene = new THREE.RenderPass(scene, camera);
+        const bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.0, 0.5, 0.15);
+        const composer = new THREE.EffectComposer(renderer);
+        composer.addPass(renderScene); composer.addPass(bloomPass);
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight); composer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        const sunLight = new THREE.DirectionalLight(0xffddaa, 0.8); scene.add(sunLight);
+        scene.add(new THREE.AmbientLight(0x222233));
+        const shipLight = new THREE.PointLight(0x00ffff, 0, 800); scene.add(shipLight);
+
+        // --- 4. ASSETS & INSTANCING ---
+        const groundMat = new THREE.MeshStandardMaterial({ map: groundTexture, emissiveMap: groundTexture, emissive: 0x444444, roughness: 0.2, metalness: 0.9, transparent: true, opacity: 1 });
+        const ground = new THREE.Mesh(new THREE.PlaneGeometry(40000, 40000), groundMat); ground.rotation.x = -Math.PI / 2; scene.add(ground);
+
+        const PATH_NODES = 1200; const SPACING = 10; 
+        const bMat = new THREE.MeshStandardMaterial({ map: windowAtlasTexture, roughness: 0.8, transparent: true, opacity: 1, emissive: 0xffffff, emissiveMap: windowAtlasTexture, emissiveIntensity: 0.4 });
+        const voidMat = new THREE.MeshBasicMaterial({ color: 0xff0000, wireframe: true, transparent: true, opacity: 0.4, blending: THREE.AdditiveBlending });
+
+        const cityMesh1 = new THREE.InstancedMesh(new THREE.BoxGeometry(45, 1, 45).translate(0, 0.5, 0), bMat, PATH_NODES); cityMesh1.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(cityMesh1);
+        const cityMesh2 = new THREE.InstancedMesh(new THREE.CylinderGeometry(30, 30, 1, 6).translate(0, 0.5, 0), bMat, PATH_NODES); cityMesh2.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(cityMesh2);
+        const cityMesh3 = new THREE.InstancedMesh(new THREE.BoxGeometry(100, 1, 80).translate(0, 0.5, 0), bMat, PATH_NODES); cityMesh3.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(cityMesh3);
+
+        const spireMat = new THREE.MeshStandardMaterial({ color: 0x111111, emissive: 0x00ffff, emissiveIntensity: 1.5, wireframe: true, transparent: true, opacity: 1 });
+        const spireMesh = new THREE.InstancedMesh(new THREE.ConeGeometry(40, 600, 4, 1, true).translate(0, 300, 0), spireMat, Math.floor(PATH_NODES / 8)); spireMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(spireMesh);
+
+        const farmMat = new THREE.MeshStandardMaterial({ color: 0x993322, roughness: 0.8, transparent: true, opacity: 1 });
+        const farmMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(18, 18, 1, 12).translate(0, 0.5, 0), farmMat, PATH_NODES); farmMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(farmMesh);
+
+        const archMat = new THREE.MeshStandardMaterial({ color: 0x222222, emissive: 0x00ffff, emissiveIntensity: 0.4, transparent: true, opacity: 1 });
+        const archMesh = new THREE.InstancedMesh(new THREE.TorusGeometry(35, 1.5, 8, 32, Math.PI), archMat, Math.floor(PATH_NODES / 10)); archMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(archMesh);
+
+        const billboardMat = new THREE.MeshBasicMaterial({ color: 0xff00ff, side: THREE.DoubleSide, transparent: true, opacity: 1, blending: THREE.AdditiveBlending });
+        const billboardMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(60, 30).translate(0, 15, 0), billboardMat, Math.floor(PATH_NODES / 10)); billboardMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(billboardMesh);
+        
+        const antennaMat = new THREE.MeshStandardMaterial({ color: 0x333333, emissive: 0xff0000, emissiveIntensity: 2.0, transparent: true, opacity: 1 });
+        const antennaMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.5, 0.5, 80).translate(0, 40, 0), antennaMat, Math.floor(PATH_NODES / 5)); antennaMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(antennaMesh);
+
+        const spotlightMat = new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.05, blending: THREE.AdditiveBlending, depthWrite: false });
+        const spotlightMesh = new THREE.InstancedMesh(new THREE.ConeGeometry(30, 800, 16, 1, true).translate(0, 400, 0), spotlightMat, 30); spotlightMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(spotlightMesh);
+        const spotlightData = Array.from({length: 30}, () => ({ offset: new THREE.Vector3((Math.random()-0.5)*2000, 0, (Math.random()-0.5)*2000), rotSpeed: Math.random()*0.02 - 0.01, phase: Math.random()*Math.PI*2 }));
+
+        const droneCount = 300;
+        const droneMat = new THREE.MeshBasicMaterial({ color: 0x00ffaa, transparent: true, opacity: 1 });
+        const droneMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(1.5, 8, 8), droneMat, droneCount); droneMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(droneMesh);
+        const droneData = Array.from({length: droneCount}, () => ({ x: (Math.random()-0.5)*1500, y: Math.random()*300+50, z: (Math.random()-0.5)*2000, speedX: (Math.random()-0.5)*2, speedY: (Math.random()-0.5)*0.5 }));
+
+        const bargeCount = 40;
+        const bargeMat = new THREE.MeshStandardMaterial({ color: 0x111111, emissive: 0x111111, transparent: true, opacity: 1 });
+        const bargeMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(40, 10, 80), bargeMat, bargeCount); bargeMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(bargeMesh);
+        const bargeData = Array.from({length: bargeCount}, () => ({ x: (Math.random()-0.5)*2000, y: Math.random()*200+100, z: (Math.random()-0.5)*4000, speed: Math.random()*0.5 + 0.2 }));
+
+        const trafficCount = 1000;
+        const trafficMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 1 });
+        const trafficMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1.5, 1, 6), trafficMat, trafficCount); trafficMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(trafficMesh);
+        const trafficData = Array.from({length: trafficCount}, (_, i) => ({ x: (Math.random() - 0.5) * (i > 500 ? 2000 : 1200), y: Math.random() * (i > 500 ? 400 : 200) + (i > 500 ? 450 : 10), z: (Math.random() - 0.5) * 2000, speed: (Math.random() * 8 + 4) * (Math.random() > 0.5 ? -1 : 1), highAlt: i > 500 }));
+
+        const starGeo = new THREE.BufferGeometry(); const starPos = [];
+        for(let i=0; i<5000; i++) starPos.push((Math.random()-0.5)*40000, Math.random()*20000 - 5000, (Math.random()-0.5)*40000);
+        starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPos, 3));
+        const starMat = new THREE.PointsMaterial({color: 0xffffff, size: 25, transparent: true, opacity: 0, sizeAttenuation: true}); const stars = new THREE.Points(starGeo, starMat); scene.add(stars);
+
+        const OBELISK_COUNT = 150;
+        const obeliskMat = new THREE.MeshStandardMaterial({ color: 0x111111, emissive: 0x330066, roughness: 0.2, flatShading: true, transparent: true, opacity: 0 });
+        const obeliskMesh = new THREE.InstancedMesh(new THREE.OctahedronGeometry(1, 0), obeliskMat, OBELISK_COUNT); obeliskMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(obeliskMesh);
+        const obeliskData = Array.from({length: OBELISK_COUNT}, () => ({ offset: new THREE.Vector3((Math.random()-0.5)*12000, Math.random()*8000, (Math.random()-0.5)*12000), scaleY: Math.random() * 40 + 20, scaleXZ: Math.random() * 8 + 4, rotSpeed: new THREE.Vector3(Math.random()*0.01, Math.random()*0.01, Math.random()*0.01) }));
+
+        const ASTEROID_COUNT = 800;
+        const astMat = new THREE.MeshStandardMaterial({ color: 0x444444, emissive: 0x444444, roughness: 0.9, flatShading: true, transparent: true, opacity: 0 });
+        const asteroidMesh = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 0), astMat, ASTEROID_COUNT); asteroidMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(asteroidMesh);
+        const asteroidData = Array.from({length: ASTEROID_COUNT}, () => ({ offset: new THREE.Vector3((Math.random()-0.5)*8000, (Math.random()-0.5)*8000, (Math.random()-0.5)*8000), scale: Math.random() * 15 + 5, rotSpeed: new THREE.Vector3(Math.random()*0.02, Math.random()*0.02, Math.random()*0.02) }));
+
+        const crystalCount = 200;
+        const crystalMat = new THREE.MeshStandardMaterial({ color: 0x00ffff, emissive: 0x00aaff, transparent: true, opacity: 0 });
+        const crystalMesh = new THREE.InstancedMesh(new THREE.OctahedronGeometry(3, 0), crystalMat, crystalCount); crystalMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(crystalMesh);
+        const crystalData = Array.from({length: crystalCount}, () => ({ offset: new THREE.Vector3((Math.random()-0.5)*6000, (Math.random()-0.5)*6000, (Math.random()-0.5)*6000), scale: Math.random()*5+2, rot: Math.random()*0.05 }));
+
+        const debrisCount = 400;
+        const debrisMat = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 1.0, roughness: 0.2, flatShading: true, transparent: true, opacity: 0 });
+        const debrisMesh = new THREE.InstancedMesh(new THREE.TetrahedronGeometry(4, 0), debrisMat, debrisCount); debrisMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(debrisMesh);
+        const debrisData = Array.from({length: debrisCount}, () => ({ offset: new THREE.Vector3((Math.random()-0.5)*10000, (Math.random()-0.5)*10000, (Math.random()-0.5)*10000), rotX: Math.random()*0.1, rotY: Math.random()*0.1 }));
+
+        const satCount = 50;
+        const satMat = new THREE.MeshStandardMaterial({ color: 0x333333, emissive: 0x111111, metalness: 0.9, transparent: true, opacity: 0 });
+        const satMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(20, 1, 8), satMat, satCount); satMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(satMesh);
+        const satData = Array.from({length: satCount}, () => ({ offset: new THREE.Vector3((Math.random()-0.5)*8000, (Math.random()-0.5)*8000, (Math.random()-0.5)*8000), rot: Math.random()*Math.PI }));
+
+        const cometCount = 15;
+        const cometMat = new THREE.MeshBasicMaterial({ color: 0xffaa00, transparent: true, opacity: 0 });
+        const cometMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(6, 8, 8), cometMat, cometCount); cometMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(cometMesh);
+        const cometData = Array.from({length: cometCount}, () => ({ x: (Math.random()-0.5)*15000, y: (Math.random()-0.5)*15000, z: (Math.random()-0.5)*15000, speedX: (Math.random()-0.5)*80, speedY: (Math.random()-0.5)*80, speedZ: (Math.random()-0.5)*80 }));
+
+        const riftCount = 8;
+        const riftMat = new THREE.MeshBasicMaterial({ color: 0xff0033, transparent: true, opacity: 0, blending: THREE.AdditiveBlending });
+        const riftMesh = new THREE.InstancedMesh(new THREE.TorusGeometry(300, 10, 16, 64), riftMat, riftCount); riftMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(riftMesh);
+        const riftData = Array.from({length: riftCount}, () => ({ offset: new THREE.Vector3((Math.random()-0.5)*20000, (Math.random()-0.5)*20000, (Math.random()-0.5)*20000), rotX: Math.random()*Math.PI, rotY: Math.random()*Math.PI }));
+
+        const sunMesh = new THREE.Mesh(new THREE.SphereGeometry(1500, 32, 32), new THREE.MeshBasicMaterial({ color: 0xffddaa })); scene.add(sunMesh);
+        const nebGeo = new THREE.SphereGeometry(6000, 32, 32);
+        const nebMat1 = new THREE.MeshBasicMaterial({ color: 0xaa00ff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }); const nebula1 = new THREE.Mesh(nebGeo, nebMat1); nebula1.position.set(8000, 4000, -12000); scene.add(nebula1);
+        const nebMat2 = new THREE.MeshBasicMaterial({ color: 0x00aaff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }); const nebula2 = new THREE.Mesh(nebGeo, nebMat2); nebula2.position.set(-9000, -2000, -15000); scene.add(nebula2);
+        const stationMat = new THREE.MeshStandardMaterial({ color: 0x8899aa, emissive: 0x8899aa, metalness: 0.6, roughness: 0.4, transparent: true, opacity: 0 }); const stationMesh = new THREE.Mesh(new THREE.TorusGeometry(1800, 100, 16, 64), stationMat); scene.add(stationMesh);
+
+        const planets = [];
+        for(let i=0; i<30; i++) {
+            const color = new THREE.Color().setHSL(Math.random(), 0.9, 0.5).getHex();
+            const mat = new THREE.MeshStandardMaterial({ color: color, emissive: color, roughness: 0.7, transparent: true, opacity: 0 });
+            const radius = Math.random() * 600 + 200;
+            const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 32, 32), mat); scene.add(mesh);
+            let ringMat = null; let ringMesh = null;
+            if (i % 4 === 0) { 
+                ringMat = new THREE.MeshBasicMaterial({ color: color, side: THREE.DoubleSide, transparent: true, opacity: 0 }); ringMesh = new THREE.Mesh(new THREE.RingGeometry(radius * 1.4, radius * 2.2, 64), ringMat);
+                ringMesh.rotation.x = Math.PI / 2 + (Math.random() * 0.4); ringMesh.rotation.y = (Math.random() - 0.5) * 0.5; mesh.add(ringMesh);
+            }
+            planets.push({ mesh, mat, ringMat, ringMesh, offset: new THREE.Vector3((Math.random() - 0.5) * 16000, Math.random() * 6000 + 1000, (Math.random() - 0.5) * 16000) });
+        }
+
+        const trackMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(20, 1, 4), new THREE.MeshStandardMaterial({ color: 0x111111, emissive: 0x00ffff, roughness: 0.5 }), PATH_NODES); trackMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(trackMesh);
+        const tunnelMat = new THREE.MeshStandardMaterial({ map: tunnelTexture, emissiveMap: tunnelTexture, emissive: 0xffffff, side: THREE.BackSide, transparent: true, opacity: 0 });
+        const tunnelMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(80, 80, SPACING + 0.5, 16, 1, true), tunnelMat, PATH_NODES); tunnelMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(tunnelMesh);
+
+        const dummy = new THREE.Object3D(); const pieceDistances = new Float32Array(PATH_NODES); for (let i = 0; i < PATH_NODES; i++) pieceDistances[i] = i * SPACING;
+        const warpCount = 600; const warpMat = new THREE.MeshBasicMaterial({ color: 0x1166ff, transparent: true, opacity: 0 }); const warpMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(3, 3, 1500), warpMat, warpCount); warpMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); camera.add(warpMesh); 
+        const warpData = Array.from({length: warpCount}, () => ({ x: (Math.random() - 0.5) * 800, y: (Math.random() - 0.5) * 800, z: -Math.random() * 3000 - 500 })); const warpDummy = new THREE.Object3D();
+
+        // --- 6. GAMELOOP & LOGIC ---
+        let realmState = 0, boostTimer = 0, currentTunnelStart = 3000, currentTunnelEnd = 5000, frameCount = 0, lastTime = performance.now(), isWorldInit = false; 
+
+        const keys = { w: false, s: false, shift: false };
+        window.addEventListener('keydown', e => { 
+            if(e.code==='KeyW'||e.code==='ArrowUp')keys.w=true; 
+            if(e.code==='KeyS'||e.code==='ArrowDown')keys.s=true; 
+            if(e.key==='Shift')keys.shift=true; 
+            if(e.code==='KeyJ' || e.key==='j') voidMode = !voidMode; 
+        });
+        window.addEventListener('keyup', e => { 
+            if(e.code==='KeyW'||e.code==='ArrowUp')keys.w=false; 
+            if(e.code==='KeyS'||e.code==='ArrowDown')keys.s=false; 
+            if(e.key==='Shift')keys.shift=false; 
+        });
+
+        const uiSpeed = document.getElementById('speed'), uiBoost = document.getElementById('boost-ui'), uiTitle = document.getElementById('world-title'), uiMiles = document.getElementById('miles');
+        const tempColor = new THREE.Color();
+
+        function animate() {
+            requestAnimationFrame(animate); const timeNow = performance.now();
+            const isBoosting = keys.shift && speed > 0.5; const transitionSpeed = isBoosting ? 0.015 : 0.08; 
+            trackChaosLevel = THREE.MathUtils.lerp(trackChaosLevel, isBoosting ? 1 : 0, transitionSpeed); realmState = THREE.MathUtils.lerp(realmState, isBoosting ? 1 : 0, transitionSpeed);
+
+            // MASSIVE SPEED OVERRIDE FOR VOID MODE
+            const normalMaxSpeed = isBoosting ? 10.0 : 3.5;
+            if (voidMode) {
+                speed = THREE.MathUtils.lerp(speed, 7500, 0.05); // Rapidly accelerate to ludicrous speed
+            } else {
+                if (keys.w) speed += (isBoosting ? 0.05 : 0.02); 
+                if (keys.s) speed -= 0.08; 
+                if (!keys.w && !keys.s) speed += (speed > 0 ? -0.1 : 0.01); // Enhanced drag
+                speed = Math.max(0, Math.min(speed, normalMaxSpeed)); 
+            }
+            
+            // Rapid deceleration if you exit void mode
+            if (!voidMode && speed > normalMaxSpeed) {
+                speed = THREE.MathUtils.lerp(speed, normalMaxSpeed, 0.15); 
+            }
+
+            distance += speed;
+            uiSpeed.innerText = Math.floor(speed * 100); uiBoost.style.opacity = isBoosting ? 1 : 0;
+            uiMiles.innerText = (distance / 5000).toFixed(2);
+
+            camera.fov = THREE.MathUtils.lerp(85, 130, realmState); camera.updateProjectionMatrix();
+            const flightData = getFlightData(distance); const lookAtData = getFlightData(distance + Math.max(25, speed * 0.5)); const forwardDir = new THREE.Vector3().subVectors(lookAtData.pos, flightData.pos).normalize();
+            camera.position.copy(flightData.pos).addScaledVector(flightData.up, 8).addScaledVector(forwardDir, -5); camera.up.copy(flightData.up); camera.lookAt(lookAtData.pos.clone().addScaledVector(lookAtData.up, 8)); shipLight.position.copy(camera.position);
+            ground.position.set(camera.position.x, 0, camera.position.z); groundTexture.offset.x = camera.position.x / 1200; groundTexture.offset.y = -camera.position.z / 1200;
+
+            if (isBoosting) boostTimer += 0.016; else boostTimer = 0;
+            let warpIntensity = 0; 
+            if (isBoosting) { 
+                if (boostTimer < 9.0) warpIntensity = 1.0; 
+                else if (boostTimer < 10.0) warpIntensity = 1.0 - (boostTimer - 9.0); 
+            }
+            warpMat.opacity = warpIntensity * realmState; warpMesh.visible = (warpMat.opacity > 0.01) && !voidMode;
+            if (warpIntensity > 0) { for(let i=0; i<warpCount; i++) { warpData[i].z += 400; if (warpData[i].z > 500) warpData[i].z -= 3000; warpDummy.position.set(warpData[i].x, warpData[i].y, warpData[i].z); warpDummy.updateMatrix(); warpMesh.setMatrixAt(i, warpDummy.matrix); } warpMesh.instanceMatrix.needsUpdate = true; }
+
+            // === OPACITY & VISIBILITY FADING ===
+            const cityOpacity = 1 - realmState;
+            farmMat.opacity = cityOpacity; groundMat.opacity = cityOpacity; archMat.opacity = cityOpacity; trafficMat.opacity = cityOpacity; spireMat.opacity = cityOpacity;
+            billboardMat.opacity = cityOpacity; antennaMat.opacity = cityOpacity; spotlightMat.opacity = cityOpacity * 0.05; droneMat.opacity = cityOpacity; bargeMat.opacity = cityOpacity;
+            
+            astMat.opacity = realmState * 0.8; obeliskMat.opacity = realmState * 0.9; sunMesh.material.opacity = realmState; stationMat.opacity = realmState; tunnelMat.opacity = realmState; 
+            nebMat1.opacity = realmState * 0.15; nebMat2.opacity = realmState * 0.15; starMat.opacity = realmState;
+            crystalMat.opacity = realmState * 0.8; debrisMat.opacity = realmState; satMat.opacity = realmState; cometMat.opacity = realmState; riftMat.opacity = realmState * 0.7;
+            planets.forEach(p => { p.mat.opacity = realmState * 0.9; if(p.ringMat) p.ringMat.opacity = realmState * 0.6; });
+
+            // === BLOOMS ===
+            groundMat.emissiveIntensity = cityOpacity * 0.8; archMat.emissiveIntensity = cityOpacity * 0.4; spireMat.emissiveIntensity = cityOpacity * 2.0; antennaMat.emissiveIntensity = cityOpacity * 2.0;
+            astMat.emissiveIntensity = realmState * 0.5; obeliskMat.emissiveIntensity = realmState * 1.5; stationMat.emissiveIntensity = realmState * 4.0; crystalMat.emissiveIntensity = realmState * 2.0; satMat.emissiveIntensity = realmState * 1.0;
+            planets.forEach(p => p.mat.emissiveIntensity = realmState * 4.0);
+            
+            sunMesh.material.color.setHex(0xffddaa).multiplyScalar(1.0 + (realmState * 3.0)); warpMat.color.setHex(0x1166ff).multiplyScalar(1.0 + (realmState * 80.0)); trackMesh.material.emissiveIntensity = 0.5; tunnelMat.emissiveIntensity = 0.5 * realmState;
+
+            const citySolid = realmState < 0.1; archMat.depthWrite = citySolid; farmMat.depthWrite = citySolid; groundMat.depthWrite = citySolid; spireMat.depthWrite = citySolid; bargeMat.depthWrite = citySolid;
+            
+            // VOID MODE LOGIC
+            if (voidMode) {
+                scene.background.setHex(0x000000);
+                scene.fog.color.setHex(0x000000);
+                uiTitle.innerText = "VOID MODE"; uiTitle.style.color = '#ff0055';
+                trackMesh.material.emissive.setHex(0xff0000); 
+                
+                // Swap buildings to red wireframes
+                if (cityMesh1.material !== voidMat) {
+                    cityMesh1.material = voidMat; cityMesh2.material = voidMat; cityMesh3.material = voidMat;
+                }
+            } else {
+                scene.background.copy(colorSkyBlue).lerp(colorSpaceBlack, realmState); 
+                scene.fog.color.copy(colorSkyBlue).lerp(colorSpaceBlack, realmState); 
+                scene.fog.density = THREE.MathUtils.lerp(0.0008, 0.0001, realmState); 
+                uiTitle.innerText = realmState > 0.5 ? "Deep Space Transit Sector" : "Sector 7: Metropolis"; uiTitle.style.color = realmState > 0.5 ? '#1166ff' : '#ffffff';
+                trackMesh.material.emissive.setHex(0x00ffff);
+                
+                // Swap buildings back to normal
+                if (cityMesh1.material !== bMat) {
+                    cityMesh1.material = bMat; cityMesh2.material = bMat; cityMesh3.material = bMat;
+                }
+                bMat.opacity = cityOpacity; bMat.emissiveIntensity = cityOpacity * 0.4; bMat.depthWrite = citySolid;
+            }
+
+            const showBuildings = voidMode || (realmState < 0.95);
+            const showNormalCityProps = !voidMode && (realmState < 0.95);
+            const showSpace = !voidMode && (realmState > 0.05);
+
+            cityMesh1.visible = showBuildings; cityMesh2.visible = showBuildings; cityMesh3.visible = showBuildings; 
+            archMesh.visible = showNormalCityProps; ground.visible = showNormalCityProps; farmMesh.visible = showNormalCityProps; trafficMesh.visible = showNormalCityProps; spireMesh.visible = showNormalCityProps; billboardMesh.visible = showNormalCityProps; antennaMesh.visible = showNormalCityProps; spotlightMesh.visible = showNormalCityProps; droneMesh.visible = showNormalCityProps; bargeMesh.visible = showNormalCityProps;
+            
+            asteroidMesh.visible = showSpace; obeliskMesh.visible = showSpace; stationMesh.visible = showSpace; sunMesh.visible = showSpace; tunnelMesh.visible = showSpace; nebula1.visible = showSpace; nebula2.visible = showSpace; stars.visible = showSpace; crystalMesh.visible = showSpace; debrisMesh.visible = showSpace; satMesh.visible = showSpace; cometMesh.visible = showSpace; riftMesh.visible = showSpace; planets.forEach(p => p.mesh.visible = showSpace);
+
+            shipLight.intensity = voidMode ? 0 : (realmState * 6); 
+            
+            if (showNormalCityProps) {
+                const colorShiftSpeed = timeNow * 0.0005;
+                for(let i=0; i<trafficCount; i++) { let td = trafficData[i]; td.z += td.speed; if (td.z > 1000) td.z -= 2000; if (td.z < -1000) td.z += 2000; dummy.position.set(camera.position.x + td.x, td.y, camera.position.z + td.z); dummy.rotation.set(0, td.speed > 0 ? 0 : Math.PI, 0); dummy.scale.set(1, 1, 1); dummy.updateMatrix(); trafficMesh.setMatrixAt(i, dummy.matrix); if (!td.highAlt) { tempColor.setHSL((i * 0.01 + colorShiftSpeed) % 1.0, 1.0, 0.6); } else { tempColor.setHSL(0.1 + (i % 2) * 0.05, 1.0, 0.6); } trafficMesh.setColorAt(i, tempColor); }
+                trafficMesh.instanceMatrix.needsUpdate = true; trafficMesh.instanceColor.needsUpdate = true;
+                
+                for(let i=0; i<30; i++) { let sd = spotlightData[i]; sd.phase += sd.rotSpeed; dummy.position.set(camera.position.x + sd.offset.x, 0, camera.position.z + sd.offset.z); dummy.rotation.set(Math.sin(sd.phase)*0.3, 0, Math.cos(sd.phase)*0.3); dummy.scale.set(1,1,1); dummy.updateMatrix(); spotlightMesh.setMatrixAt(i, dummy.matrix); } spotlightMesh.instanceMatrix.needsUpdate = true;
+                for(let i=0; i<droneCount; i++) { let dd = droneData[i]; dd.x += dd.speedX; dd.y += dd.speedY; if(dd.x > 1500) dd.x -= 3000; if(dd.x < -1500) dd.x += 3000; if(dd.y > 600 || dd.y < 50) dd.speedY *= -1; dummy.position.set(camera.position.x + dd.x, dd.y, camera.position.z + dd.z); dummy.updateMatrix(); droneMesh.setMatrixAt(i, dummy.matrix); } droneMesh.instanceMatrix.needsUpdate = true;
+                for(let i=0; i<bargeCount; i++) { let bd = bargeData[i]; bd.z += bd.speed; if(bd.z > 2000) bd.z -= 4000; dummy.position.set(camera.position.x + bd.x, bd.y, camera.position.z + bd.z); dummy.rotation.set(0, bd.speed > 0 ? 0 : Math.PI, 0); dummy.updateMatrix(); bargeMesh.setMatrixAt(i, dummy.matrix); } bargeMesh.instanceMatrix.needsUpdate = true;
+            }
+
+            const forceUpdateAll = trackChaosLevel > 0.001 && trackChaosLevel < 0.999;
+            let trackUpd=false, cityUpd=false, farmUpd=false, archUpd=false, tunnelUpd=false, spireUpd=false, billUpd=false, antUpd=false;
+            
+            for (let i = 0; i < PATH_NODES; i++) {
+                let pieceUpdated = false; while (pieceDistances[i] < distance - 200) { pieceDistances[i] += PATH_NODES * SPACING; pieceUpdated = true; }
+                if (pieceUpdated || !isWorldInit || forceUpdateAll) {
+                    let d = pieceDistances[i], data = getFlightData(d), fData = getFlightData(d + 1); const localForward = new THREE.Vector3().subVectors(fData.pos, data.pos).normalize();
+                    dummy.position.copy(data.pos); dummy.up.copy(data.up); dummy.lookAt(fData.pos); dummy.scale.set(1, 1, 1); dummy.updateMatrix(); trackMesh.setMatrixAt(i, dummy.matrix); trackUpd = true;
+
+                    if (d > currentTunnelEnd) { currentTunnelStart = d + (Math.random() * 6000 + 6000); currentTunnelEnd = currentTunnelStart + (Math.random() * 2000 + 2000); }
+                    if (d >= currentTunnelStart && d <= currentTunnelEnd) { dummy.position.copy(data.pos); dummy.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), localForward); dummy.scale.set(1, 1, 1); dummy.updateMatrix(); tunnelMesh.setMatrixAt(i, dummy.matrix); } else { dummy.scale.set(0, 0, 0); dummy.updateMatrix(); tunnelMesh.setMatrixAt(i, dummy.matrix); } tunnelUpd = true;
+
+                    if (i % 10 === 0) { dummy.position.copy(data.pos); dummy.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), localForward); dummy.scale.set(1, 1, 1); dummy.updateMatrix(); archMesh.setMatrixAt(Math.floor(i / 10), dummy.matrix); archUpd = true; }
+                    const lateralOffset = new THREE.Vector3().crossVectors(localForward, new THREE.Vector3(0,1,0)).normalize();
+                    
+                    if (i % 8 === 0) { const spreadS = (Math.random() * 2500 + 1000) * (Math.random() > 0.5 ? 1 : -1); dummy.position.set(data.pos.x + lateralOffset.x * spreadS, 0, data.pos.z + lateralOffset.z * spreadS); dummy.rotation.set(0, Math.random() * Math.PI, 0); dummy.scale.set(1, Math.random() * 2 + 1, 1); dummy.updateMatrix(); spireMesh.setMatrixAt(Math.floor(i / 8), dummy.matrix); spireUpd = true; }
+                    if (i % 10 === 0) { const spreadB = (Math.random() * 1200 + 300) * (Math.random() > 0.5 ? 1 : -1); dummy.position.set(data.pos.x + lateralOffset.x * spreadB, Math.random()*200 + 50, data.pos.z + lateralOffset.z * spreadB); dummy.rotation.set(0, Math.random() * Math.PI, 0); dummy.scale.set(1, 1, 1); dummy.updateMatrix(); billboardMesh.setMatrixAt(Math.floor(i / 10), dummy.matrix); billUpd = true; }
+                    
+                    const zoneValue = Math.sin(data.pos.x * 0.0001) + Math.cos(data.pos.z * 0.0001);
+                    if (zoneValue > -0.6) {
+                        const spread1 = -(Math.random() * 1000 + 150); dummy.position.set(data.pos.x + lateralOffset.x * spread1, 0, data.pos.z + lateralOffset.z * spread1); dummy.rotation.set(0, Math.random() * Math.PI, 0); const s1 = Math.random() * 500 + 100; dummy.scale.set(1, s1, 1); dummy.updateMatrix(); cityMesh1.setMatrixAt(i, dummy.matrix); 
+                        const spread2 = Math.random() * 1000 + 150; dummy.position.set(data.pos.x + lateralOffset.x * spread2, 0, data.pos.z + lateralOffset.z * spread2); dummy.rotation.set(0, Math.random() * Math.PI, 0); const s2 = Math.random() * 700 + 200; dummy.scale.set(1, s2, 1); dummy.updateMatrix(); cityMesh2.setMatrixAt(i, dummy.matrix); 
+                        const spread3 = (Math.random() * 1500 + 1200) * (Math.random() > 0.5 ? 1 : -1); dummy.position.set(data.pos.x + lateralOffset.x * spread3, 0, data.pos.z + lateralOffset.z * spread3); dummy.rotation.set(0, Math.random() * Math.PI, 0); dummy.scale.set(1, Math.random() * 200 + 80, 1); dummy.updateMatrix(); cityMesh3.setMatrixAt(i, dummy.matrix); 
+                        dummy.scale.set(0, 0, 0); dummy.updateMatrix(); farmMesh.setMatrixAt(i, dummy.matrix); cityUpd = true; farmUpd = true;
+                        
+                        if (i % 5 === 0) { dummy.position.set(data.pos.x + lateralOffset.x * spread2, s2, data.pos.z + lateralOffset.z * spread2); dummy.scale.set(1,1,1); dummy.updateMatrix(); antennaMesh.setMatrixAt(Math.floor(i / 5), dummy.matrix); antUpd = true; }
+                    } else {
+                        const spreadF = (Math.random() * 1500 + 180) * (Math.random() > 0.5 ? 1 : -1); dummy.position.set(data.pos.x + lateralOffset.x * spreadF, 0, data.pos.z + lateralOffset.z * spreadF); dummy.rotation.set(0, Math.random() * Math.PI, 0); dummy.scale.set(1, Math.random() * 80 + 20, 1); dummy.updateMatrix(); farmMesh.setMatrixAt(i, dummy.matrix); 
+                        dummy.scale.set(0, 0, 0); dummy.updateMatrix(); cityMesh1.setMatrixAt(i, dummy.matrix); cityMesh2.setMatrixAt(i, dummy.matrix); cityMesh3.setMatrixAt(i, dummy.matrix); if (i % 5 === 0) antennaMesh.setMatrixAt(Math.floor(i / 5), dummy.matrix); antUpd = true; cityUpd = true; farmUpd = true;
+                    }
+                }
+            }
+            isWorldInit = true; 
+
+            if (showSpace) {
+                for(let i=0; i<ASTEROID_COUNT; i++) { let d = asteroidData[i]; let zDiff = (camera.position.z + d.offset.z) - camera.position.z; if (zDiff > 4000) d.offset.z -= 8000; if (zDiff < -4000) d.offset.z += 8000; dummy.position.set(camera.position.x + d.offset.x, camera.position.y + d.offset.y, camera.position.z + d.offset.z); dummy.rotation.set(distance * d.rotSpeed.x, distance * d.rotSpeed.y, distance * d.rotSpeed.z); dummy.scale.set(d.scale, d.scale, d.scale); dummy.updateMatrix(); asteroidMesh.setMatrixAt(i, dummy.matrix); } asteroidMesh.instanceMatrix.needsUpdate = true;
+                for(let i=0; i<OBELISK_COUNT; i++) { let d = obeliskData[i]; let zDiff = (camera.position.z + d.offset.z) - camera.position.z; if (zDiff > 6000) d.offset.z -= 12000; if (zDiff < -6000) d.offset.z += 12000; dummy.position.set(camera.position.x + d.offset.x, camera.position.y + d.offset.y, camera.position.z + d.offset.z); dummy.rotation.set(distance * d.rotSpeed.x, distance * d.rotSpeed.y, distance * d.rotSpeed.z); dummy.scale.set(d.scaleXZ, d.scaleY, d.scaleXZ); dummy.updateMatrix(); obeliskMesh.setMatrixAt(i, dummy.matrix); } obeliskMesh.instanceMatrix.needsUpdate = true;
+                for(let i=0; i<crystalCount; i++) { let d = crystalData[i]; d.offset.z += 10; if(d.offset.z > 4000) d.offset.z -= 8000; dummy.position.set(camera.position.x + d.offset.x, camera.position.y + d.offset.y, camera.position.z + d.offset.z); dummy.rotation.set(distance * d.rot, distance * d.rot, 0); dummy.scale.set(d.scale, d.scale, d.scale); dummy.updateMatrix(); crystalMesh.setMatrixAt(i, dummy.matrix); } crystalMesh.instanceMatrix.needsUpdate = true;
+                for(let i=0; i<debrisCount; i++) { let d = debrisData[i]; let zDiff = (camera.position.z + d.offset.z) - camera.position.z; if(zDiff > 5000) d.offset.z -= 10000; if(zDiff < -5000) d.offset.z += 10000; dummy.position.set(camera.position.x + d.offset.x, camera.position.y + d.offset.y, camera.position.z + d.offset.z); dummy.rotation.set(distance * d.rotX, distance * d.rotY, 0); dummy.updateMatrix(); debrisMesh.setMatrixAt(i, dummy.matrix); } debrisMesh.instanceMatrix.needsUpdate = true;
+                for(let i=0; i<satCount; i++) { let d = satData[i]; let zDiff = (camera.position.z + d.offset.z) - camera.position.z; if(zDiff > 6000) d.offset.z -= 12000; if(zDiff < -6000) d.offset.z += 12000; dummy.position.set(camera.position.x + d.offset.x, camera.position.y + d.offset.y, camera.position.z + d.offset.z); dummy.rotation.set(0, d.rot, 0); dummy.updateMatrix(); satMesh.setMatrixAt(i, dummy.matrix); } satMesh.instanceMatrix.needsUpdate = true;
+                for(let i=0; i<cometCount; i++) { let d = cometData[i]; d.x += d.speedX; d.y += d.speedY; d.z += d.speedZ; if(d.x > 20000) d.x -= 40000; if(d.x < -20000) d.x += 40000; if(d.y > 20000) d.y -= 40000; if(d.y < -20000) d.y += 40000; if(d.z > 20000) d.z -= 40000; if(d.z < -20000) d.z += 40000; dummy.position.set(camera.position.x + d.x, camera.position.y + d.y, camera.position.z + d.z); dummy.updateMatrix(); cometMesh.setMatrixAt(i, dummy.matrix); } cometMesh.instanceMatrix.needsUpdate = true;
+                for(let i=0; i<riftCount; i++) { let d = riftData[i]; let zDiff = (camera.position.z + d.offset.z) - camera.position.z; if(zDiff > 10000) d.offset.z -= 20000; if(zDiff < -10000) d.offset.z += 20000; dummy.position.set(camera.position.x + d.offset.x, camera.position.y + d.offset.y, camera.position.z + d.offset.z); dummy.rotation.set(d.rotX, d.rotY, distance * 0.005); dummy.updateMatrix(); riftMesh.setMatrixAt(i, dummy.matrix); } riftMesh.instanceMatrix.needsUpdate = true;
+            }
+
+            if (trackUpd) trackMesh.instanceMatrix.needsUpdate = true; if (tunnelUpd) tunnelMesh.instanceMatrix.needsUpdate = true; if (archUpd) archMesh.instanceMatrix.needsUpdate = true; if (farmUpd) farmMesh.instanceMatrix.needsUpdate = true; if (spireUpd) spireMesh.instanceMatrix.needsUpdate = true; if (billUpd) billboardMesh.instanceMatrix.needsUpdate = true; if (antUpd) antennaMesh.instanceMatrix.needsUpdate = true;
+            if (cityUpd) { cityMesh1.instanceMatrix.needsUpdate = true; cityMesh2.instanceMatrix.needsUpdate = true; cityMesh3.instanceMatrix.needsUpdate = true; }
+
+            sunLight.position.set(camera.position.x + 4000, camera.position.y + 6000, camera.position.z - 15000); sunMesh.position.copy(sunLight.position);
+            stationMesh.position.set(camera.position.x - 6000, camera.position.y + 3000, camera.position.z - 10000); stationMesh.rotation.x += 0.001; stationMesh.rotation.y += 0.002;
+            planets.forEach(p => { p.mesh.position.set(camera.position.x + p.offset.x, p.offset.y, camera.position.z + p.offset.z); p.mesh.rotation.y += 0.001; if(p.ringMesh) p.ringMesh.rotation.z -= 0.002; });
+
+            frameCount++; if (timeNow >= lastTime + 1000) { document.getElementById('fps').innerText = Math.round((frameCount * 1000) / (timeNow - lastTime)); frameCount = 0; lastTime = timeNow; }
+            composer.render();
+        }
+        animate();
+    </script>
+</body>
+</html>
